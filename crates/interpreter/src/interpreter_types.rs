@@ -77,6 +77,10 @@ pub trait Jumps {
     fn pc(&self) -> usize;
     /// Returns instruction opcode.
     fn opcode(&self) -> u8;
+
+    /// Prefetches the current instruction pointer when the target can benefit from it.
+    #[inline]
+    fn prefetch_current_instruction(&self) {}
 }
 
 /// Trait for Interpreter memory operations.

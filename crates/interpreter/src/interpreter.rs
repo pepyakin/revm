@@ -293,6 +293,7 @@ impl<IW: InterpreterTypes> Interpreter<IW> {
         // byte instruction is STOP so we are safe to just increment program_counter bcs on last instruction
         // it will do noop and just stop execution of this contract
         self.bytecode.relative_jump(1);
+        self.bytecode.prefetch_current_instruction();
 
         let instruction = unsafe { instruction_table.get_unchecked(opcode as usize) };
 

@@ -19,16 +19,16 @@ workspace = true
 
 [dependencies]
 # revm
-bytecode.workspace = true
-primitives.workspace = true
-context-interface.workspace = true
-state.workspace = true
+bytecode = { package = "revm-bytecode", version = "9.0.0", default-features = false }
+primitives = { package = "revm-primitives", version = "22.1.0", default-features = false }
+context-interface = { package = "revm-context-interface", version = "16.0.0", default-features = false }
+state = { package = "revm-state", version = "10.0.0", default-features = false }
 
 # optional
-serde = { workspace = true, features = ["derive", "rc"], optional = true }
+serde = { version = "1.0", default-features = false, features = ["derive", "rc"], optional = true }
 
 [dev-dependencies]
-serde_json = { workspace = true, features = ["alloc"] }
+serde_json = { version = "1.0", default-features = false, features = ["alloc"] }
 
 [features]
 default = ["std"]

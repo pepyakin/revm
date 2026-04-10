@@ -92,6 +92,18 @@ impl ExtBytecode {
             || self.base.hash_slow(),
         )
     }
+
+    /// Prefetches the current instruction pointer on x86-64 so the next opcode load is more
+    /// likely to hit in L1 after straight-line fallthrough.
+    #[inline]
+    pub fn prefetch_current_instruction(&self) {
+        #[cfg(target_arch = "x86_64")]
+        unsafe {
+            use core::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
+
+            _mm_prefetch(self.instruction_pointer.cast(), _MM_HINT_T0);
+        }
+    }
 }
 
 impl LoopControl for ExtBytecode {
@@ -159,6 +171,11 @@ impl Jumps for ExtBytecode {
             self.instruction_pointer
                 .offset_from_unsigned(self.base.bytes_ref().as_ptr())
         }
+    }
+
+    #[inline]
+    fn prefetch_current_instruction(&self) {
+        ExtBytecode::prefetch_current_instruction(self)
     }
 }
 
