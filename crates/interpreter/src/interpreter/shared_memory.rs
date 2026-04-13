@@ -162,10 +162,10 @@ impl MemoryTr for SharedMemory {
 impl SharedMemory {
     /// Creates a new memory instance that can be shared between calls.
     ///
-    /// The default initial capacity is 512KiB.
+    /// The default initial capacity is 4KiB.
     #[inline]
     pub fn new() -> Self {
-        Self::with_capacity(512 * 1024)
+        Self::with_capacity(4 * 1024) // from evmone
     }
 
     /// Creates a new invalid memory instance.
@@ -206,7 +206,7 @@ impl SharedMemory {
     /// Creates a new memory instance that can be shared between calls,
     /// with `memory_limit` as upper bound for allocation size.
     ///
-    /// The default initial capacity is 512KiB.
+    /// The default initial capacity is 4KiB.
     #[cfg(feature = "memory_limit")]
     #[inline]
     pub fn new_with_memory_limit(memory_limit: u64) -> Self {
