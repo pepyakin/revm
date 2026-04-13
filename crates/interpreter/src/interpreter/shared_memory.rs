@@ -6,6 +6,7 @@ use core::{
     cmp::min,
     fmt,
     ops::Range,
+    ptr,
 };
 use primitives::{hex, B256, U256};
 use std::{rc::Rc, vec::Vec};
@@ -89,6 +90,28 @@ impl MemoryTr for SharedMemory {
         self.slice_range(range)
     }
 
+    fn get_u256(&self, offset: usize) -> U256 {
+        let buffer = self.buffer_ref();
+        let ptr = unsafe { buffer.as_ptr().add(self.my_checkpoint + offset) };
+        let limb3 = u64::from_be(unsafe { ptr::read_unaligned(ptr.cast::<u64>()) });
+        let limb2 = u64::from_be(unsafe { ptr::read_unaligned(ptr.add(8).cast::<u64>()) });
+        let limb1 = u64::from_be(unsafe { ptr::read_unaligned(ptr.add(16).cast::<u64>()) });
+        let limb0 = u64::from_be(unsafe { ptr::read_unaligned(ptr.add(24).cast::<u64>()) });
+        U256::from_limbs([limb0, limb1, limb2, limb3])
+    }
+
+    fn set_u256(&mut self, offset: usize, value: U256) {
+        let limbs = value.as_limbs();
+        let mut buffer = self.buffer_ref_mut();
+        let ptr = unsafe { buffer.as_mut_ptr().add(self.my_checkpoint + offset) };
+        unsafe {
+            ptr::write_unaligned(ptr.cast::<u64>(), limbs[3].to_be());
+            ptr::write_unaligned(ptr.add(8).cast::<u64>(), limbs[2].to_be());
+            ptr::write_unaligned(ptr.add(16).cast::<u64>(), limbs[1].to_be());
+            ptr::write_unaligned(ptr.add(24).cast::<u64>(), limbs[0].to_be());
+        }
+    }
+
     fn local_memory_offset(&self) -> usize {
         self.my_checkpoint
     }
@@ -139,10 +162,10 @@ impl MemoryTr for SharedMemory {
 impl SharedMemory {
     /// Creates a new memory instance that can be shared between calls.
     ///
-    /// The default initial capacity is 4KiB.
+    /// The default initial capacity is 512KiB.
     #[inline]
     pub fn new() -> Self {
-        Self::with_capacity(4 * 1024) // from evmone
+        Self::with_capacity(512 * 1024)
     }
 
     /// Creates a new invalid memory instance.
@@ -183,7 +206,7 @@ impl SharedMemory {
     /// Creates a new memory instance that can be shared between calls,
     /// with `memory_limit` as upper bound for allocation size.
     ///
-    /// The default initial capacity is 4KiB.
+    /// The default initial capacity is 512KiB.
     #[cfg(feature = "memory_limit")]
     #[inline]
     pub fn new_with_memory_limit(memory_limit: u64) -> Self {
@@ -384,7 +407,7 @@ impl SharedMemory {
     /// Panics on out of bounds.
     #[inline]
     pub fn get_u256(&self, offset: usize) -> U256 {
-        self.get_word(offset).into()
+        <Self as MemoryTr>::get_u256(self, offset)
     }
 
     /// Sets the `byte` at the given `index`.
@@ -417,7 +440,7 @@ impl SharedMemory {
     #[inline]
     #[cfg_attr(debug_assertions, track_caller)]
     pub fn set_u256(&mut self, offset: usize, value: U256) {
-        self.set(offset, &value.to_be_bytes::<32>());
+        <Self as MemoryTr>::set_u256(self, offset, value)
     }
 
     /// Set memory region at given `offset`.
@@ -688,5 +711,22 @@ mod tests {
         assert_eq!(sm1.buffer_ref().len(), 32);
         assert_eq!(sm1.len(), 32);
         assert_eq!(sm1.buffer_ref().get(0..32), Some(&[0_u8; 32] as &[u8]));
+    }
+
+    #[test]
+    fn get_set_u256_roundtrip_preserves_be_layout() {
+        let mut sm = SharedMemory::new();
+        sm.resize(64);
+
+        let value = U256::from_limbs([
+            0x8899_aabb_ccdd_eeff,
+            0x0011_2233_4455_6677,
+            0x0123_4567_89ab_cdef,
+            0xfedc_ba98_7654_3210,
+        ]);
+        sm.set_u256(8, value);
+
+        assert_eq!(sm.get_u256(8), value);
+        assert_eq!(&*sm.slice_len(8, 32), &value.to_be_bytes::<32>());
     }
 }

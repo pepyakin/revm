@@ -36,6 +36,30 @@ impl Default for Stack {
     }
 }
 
+#[cfg(all(feature = "std", target_arch = "x86_64"))]
+#[target_feature(enable = "avx")]
+unsafe fn swap_u256_words_avx(lhs: *mut U256, rhs: *mut U256) {
+    use core::arch::x86_64::{__m256i, _mm256_loadu_si256, _mm256_storeu_si256};
+
+    let lhs_word = unsafe { _mm256_loadu_si256(lhs.cast::<__m256i>()) };
+    let rhs_word = unsafe { _mm256_loadu_si256(rhs.cast::<__m256i>()) };
+
+    unsafe {
+        _mm256_storeu_si256(lhs.cast::<__m256i>(), rhs_word);
+        _mm256_storeu_si256(rhs.cast::<__m256i>(), lhs_word);
+    }
+}
+
+#[inline]
+unsafe fn swap_u256_words(lhs: *mut U256, rhs: *mut U256) {
+    #[cfg(all(feature = "std", target_arch = "x86_64"))]
+    if std::arch::is_x86_feature_detected!("avx") {
+        return unsafe { swap_u256_words_avx(lhs, rhs) };
+    }
+
+    unsafe { ptr::swap_nonoverlapping(lhs, rhs, 1) };
+}
+
 impl Clone for Stack {
     fn clone(&self) -> Self {
         // Use `Self::new()` to ensure the cloned Stack is constructed with at least
@@ -73,6 +97,11 @@ impl StackTr for Stack {
     }
 
     #[inline]
+    fn discard<const N: usize>(&mut self) -> bool {
+        self.discard::<N>().is_ok()
+    }
+
+    #[inline]
     fn popn_top<const POPN: usize>(&mut self) -> Option<([U256; POPN], &mut U256)> {
         if self.len() < POPN + 1 {
             return None;
@@ -97,8 +126,18 @@ impl StackTr for Stack {
     }
 
     #[inline]
+    fn pop(&mut self) -> Option<U256> {
+        self.pop().ok()
+    }
+
+    #[inline]
     fn push_slice(&mut self, slice: &[u8]) -> bool {
         self.push_slice_(slice)
+    }
+
+    #[inline]
+    fn push_immediate<const N: usize>(&mut self, slice: &[u8]) -> bool {
+        self.push_immediate_::<N>(slice)
     }
 }
 
@@ -161,6 +200,19 @@ impl Stack {
                 self.data.set_len(len - 1);
                 Ok(core::ptr::read(self.data.as_ptr().add(len - 1)))
             }
+        }
+    }
+
+    /// Removes the topmost `N` elements from the stack.
+    #[inline]
+    #[cfg_attr(debug_assertions, track_caller)]
+    pub fn discard<const N: usize>(&mut self) -> Result<(), InstructionResult> {
+        let len = self.data.len();
+        if primitives::hints_util::unlikely(len < N) {
+            Err(InstructionResult::StackUnderflow)
+        } else {
+            unsafe { self.data.set_len(len - N) };
+            Ok(())
         }
     }
 
@@ -305,7 +357,7 @@ impl Stack {
             // eliminating an intermediate copy,
             // which is a condition we know to be true in this context.
             let top = self.data.as_mut_ptr().add(len - 1);
-            core::ptr::swap_nonoverlapping(top.sub(n), top.sub(n_m_index), 1);
+            swap_u256_words(top.sub(n), top.sub(n_m_index));
         }
         true
     }
@@ -319,6 +371,46 @@ impl Stack {
         } else {
             Err(InstructionResult::StackOverflow)
         }
+    }
+
+    #[inline]
+    fn push_immediate_<const N: usize>(&mut self, slice: &[u8]) -> bool {
+        debug_assert_eq!(slice.len(), N);
+        debug_assert!(N > 0);
+        debug_assert!(N <= 32);
+        debug_assert!(self.data.capacity() >= STACK_LIMIT);
+
+        let len = self.data.len();
+        if len == STACK_LIMIT {
+            return false;
+        }
+
+        unsafe {
+            let dst = self.data.as_mut_ptr().add(len).cast::<u64>();
+            let mut limb = 0;
+            let mut chunks = slice.rchunks_exact(8);
+            for chunk in &mut chunks {
+                dst.add(limb)
+                    .write(u64::from_be_bytes(chunk.try_into().unwrap()));
+                limb += 1;
+            }
+
+            let partial = chunks.remainder();
+            if !partial.is_empty() {
+                let mut tmp = [0u8; 8];
+                tmp[8 - partial.len()..].copy_from_slice(partial);
+                dst.add(limb).write(u64::from_be_bytes(tmp));
+                limb += 1;
+            }
+
+            if limb < 4 {
+                dst.add(limb).write_bytes(0, 4 - limb);
+            }
+
+            self.data.set_len(len + 1);
+        }
+
+        true
     }
 
     /// Pushes an arbitrary length slice of bytes onto the stack, padding the last word with zeros
@@ -490,6 +582,33 @@ mod tests {
     }
 
     #[test]
+    fn push_immediates() {
+        run(|stack| {
+            let immediate = [42u8];
+            assert!(stack.push_immediate_::<1>(&immediate));
+
+            let mut padded = [0u8; 32];
+            padded[31] = 42;
+            assert_eq!(stack.data, [U256::from_be_bytes(padded)]);
+        });
+
+        run(|stack| {
+            let immediate = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+            assert!(stack.push_immediate_::<9>(&immediate));
+
+            let mut padded = [0u8; 32];
+            padded[32 - immediate.len()..].copy_from_slice(&immediate);
+            assert_eq!(stack.data, [U256::from_be_bytes(padded)]);
+        });
+
+        run(|stack| {
+            let immediate = core::array::from_fn::<_, 32, _>(|i| i as u8);
+            assert!(stack.push_immediate_::<32>(&immediate));
+            assert_eq!(stack.data, [U256::from_be_bytes(immediate)]);
+        });
+    }
+
+    #[test]
     fn stack_clone() {
         // Test cloning an empty stack
         let empty_stack = Stack::new();
@@ -527,5 +646,57 @@ mod tests {
         // Test push to the full original or cloned stack should return StackOverflow
         assert!(!full_stack.push(U256::from(100)));
         assert!(!cloned_full.push(U256::from(100)));
+    }
+
+    #[test]
+    fn discard_words() {
+        run(|stack| {
+            assert!(stack.push(U256::from(1)));
+            assert!(stack.push(U256::from(2)));
+            assert!(stack.push(U256::from(3)));
+
+            assert_eq!(stack.discard::<2>(), Ok(()));
+            assert_eq!(stack.data(), &[U256::from(1)]);
+            assert_eq!(stack.discard::<2>(), Err(InstructionResult::StackUnderflow));
+        });
+    }
+
+    #[test]
+    fn exchange_swaps_full_u256_words() {
+        run(|stack| {
+            let words = [
+                U256::from_limbs([
+                    0x0102_0304_0506_0708,
+                    0x1112_1314_1516_1718,
+                    0x2122_2324_2526_2728,
+                    0x3132_3334_3536_3738,
+                ]),
+                U256::from_limbs([
+                    0x4142_4344_4546_4748,
+                    0x5152_5354_5556_5758,
+                    0x6162_6364_6566_6768,
+                    0x7172_7374_7576_7778,
+                ]),
+                U256::from_limbs([
+                    0x8182_8384_8586_8788,
+                    0x9192_9394_9596_9798,
+                    0xa1a2_a3a4_a5a6_a7a8,
+                    0xb1b2_b3b4_b5b6_b7b8,
+                ]),
+                U256::from_limbs([
+                    0xc1c2_c3c4_c5c6_c7c8,
+                    0xd1d2_d3d4_d5d6_d7d8,
+                    0xe1e2_e3e4_e5e6_e7e8,
+                    0xf1f2_f3f4_f5f6_f7f8,
+                ]),
+            ];
+
+            for word in words {
+                assert!(stack.push(word));
+            }
+
+            assert!(stack.exchange(0, 3));
+            assert_eq!(stack.data(), &[words[3], words[1], words[2], words[0]]);
+        });
     }
 }

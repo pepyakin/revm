@@ -12,7 +12,10 @@ use crate::InstructionContext;
 ///
 /// Unconditional jump to a valid destination.
 pub fn jump<ITy: InterpreterTypes, H: ?Sized>(context: InstructionContext<'_, H, ITy>) {
-    popn!([target], context.interpreter);
+    let Some(target) = context.interpreter.stack.pop() else {
+        context.interpreter.halt_underflow();
+        return;
+    };
     jump_inner(context.interpreter, target);
 }
 
@@ -20,10 +23,27 @@ pub fn jump<ITy: InterpreterTypes, H: ?Sized>(context: InstructionContext<'_, H,
 ///
 /// Conditional jump to a valid destination if condition is true.
 pub fn jumpi<WIRE: InterpreterTypes, H: ?Sized>(context: InstructionContext<'_, H, WIRE>) {
-    popn!([target, cond], context.interpreter);
-    if !cond.is_zero() {
-        jump_inner(context.interpreter, target);
+    let cond_is_zero = {
+        let stack = &context.interpreter.stack;
+        let len = stack.len();
+        if len < 2 {
+            context.interpreter.halt_underflow();
+            return;
+        }
+        stack.data()[len - 2].is_zero()
+    };
+
+    if cond_is_zero {
+        let _ = context.interpreter.stack.discard::<2>();
+        return;
     }
+
+    let Some(target) = context.interpreter.stack.pop() else {
+        context.interpreter.halt_underflow();
+        return;
+    };
+    let _ = context.interpreter.stack.discard::<1>();
+    jump_inner(context.interpreter, target);
 }
 
 /// Internal helper function for jump operations.
@@ -31,7 +51,13 @@ pub fn jumpi<WIRE: InterpreterTypes, H: ?Sized>(context: InstructionContext<'_, 
 /// Validates jump target and performs the actual jump.
 #[inline(always)]
 fn jump_inner<WIRE: InterpreterTypes>(interpreter: &mut Interpreter<WIRE>, target: U256) {
-    let target = as_usize_saturated!(target);
+    let target = match target.as_limbs() {
+        x if (x[0] > usize::MAX as u64) | (x[1] != 0) | (x[2] != 0) | (x[3] != 0) => {
+            interpreter.halt(InstructionResult::InvalidJump);
+            return;
+        }
+        x => x[0] as usize,
+    };
     if !interpreter.bytecode.is_valid_legacy_jump(target) {
         interpreter.halt(InstructionResult::InvalidJump);
         return;
@@ -120,4 +146,40 @@ pub fn invalid<WIRE: InterpreterTypes, H: ?Sized>(context: InstructionContext<'_
 /// Unknown opcode. This opcode halts the execution.
 pub fn unknown<WIRE: InterpreterTypes, H: ?Sized>(context: InstructionContext<'_, H, WIRE>) {
     context.interpreter.halt(InstructionResult::OpcodeNotFound);
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        host::DummyHost,
+        instructions::instruction_table,
+        interpreter::{EthInterpreter, ExtBytecode, InputsImpl, SharedMemory},
+        Interpreter,
+    };
+    use bytecode::opcode::*;
+    use bytecode::Bytecode;
+    use primitives::{hardfork::SpecId, Bytes, U256};
+
+    fn run_bytecode(code: &[u8]) -> Interpreter {
+        let bytecode = Bytecode::new_raw(Bytes::copy_from_slice(code));
+        let mut interpreter = Interpreter::<EthInterpreter>::new(
+            SharedMemory::new(),
+            ExtBytecode::new(bytecode),
+            InputsImpl::default(),
+            false,
+            SpecId::AMSTERDAM,
+            u64::MAX,
+        );
+        let table = instruction_table::<EthInterpreter, DummyHost>();
+        let mut host = DummyHost::new(SpecId::AMSTERDAM);
+        interpreter.run_plain(&table, &mut host);
+        interpreter
+    }
+
+    #[test]
+    fn jumpi_false_skips_invalid_target_validation() {
+        let interpreter = run_bytecode(&[PUSH1, 0x00, PUSH1, 0xff, JUMPI, PUSH1, 0x2a]);
+
+        assert_eq!(interpreter.stack.data(), &[U256::from(0x2a)]);
+    }
 }

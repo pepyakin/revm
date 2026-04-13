@@ -24,6 +24,8 @@ pub mod interpreter;
 pub mod interpreter_action;
 /// Type traits and definitions for interpreter customization.
 pub mod interpreter_types;
+/// Osaka-specialized match-based opcode dispatch loop.
+pub mod osaka_dispatch;
 
 // Reexport primary types.
 pub use context_interface::{

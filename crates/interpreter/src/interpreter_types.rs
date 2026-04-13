@@ -142,6 +142,16 @@ pub trait MemoryTr {
         self.slice(offset..offset + len)
     }
 
+    /// Returns a 32-byte EVM word from memory.
+    fn get_u256(&self, offset: usize) -> U256 {
+        U256::try_from_be_slice(self.slice_len(offset, 32).as_ref()).unwrap()
+    }
+
+    /// Sets a 32-byte EVM word in memory.
+    fn set_u256(&mut self, offset: usize, value: U256) {
+        self.set(offset, &value.to_be_bytes::<32>())
+    }
+
     /// Resizes memory to new size
     ///
     /// # Note
@@ -188,6 +198,15 @@ pub trait StackTr {
     /// Error is internally set in interpreter.
     fn push_slice(&mut self, slice: &[u8]) -> bool;
 
+    /// Pushes a fixed-size immediate to the stack.
+    ///
+    /// This defaults to [`StackTr::push_slice`] but allows implementations to specialize the
+    /// common one-word `PUSH1..PUSH32` path.
+    fn push_immediate<const N: usize>(&mut self, slice: &[u8]) -> bool {
+        debug_assert_eq!(slice.len(), N);
+        self.push_slice(slice)
+    }
+
     /// Pushes B256 value to the stack.
     ///
     /// Internally converts B256 to U256 and then calls [`StackTr::push`].
@@ -199,6 +218,12 @@ pub trait StackTr {
     /// Pops value from the stack.
     #[must_use]
     fn popn<const N: usize>(&mut self) -> Option<[U256; N]>;
+
+    /// Discards `N` values from the top of the stack.
+    #[must_use]
+    fn discard<const N: usize>(&mut self) -> bool {
+        self.popn::<N>().is_some()
+    }
 
     /// Pop N values from the stack and return top value.
     #[must_use]

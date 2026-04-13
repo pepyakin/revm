@@ -10,8 +10,9 @@ use crate::InstructionContext;
 ///
 /// Removes the top item from the stack.
 pub fn pop<WIRE: InterpreterTypes, H: ?Sized>(context: InstructionContext<'_, H, WIRE>) {
-    // Can ignore return. as relative N jump is safe operation.
-    popn!([_i], context.interpreter);
+    if !context.interpreter.stack.discard::<1>() {
+        context.interpreter.halt_underflow();
+    }
 }
 
 /// EIP-3855: PUSH0 instruction
@@ -29,7 +30,7 @@ pub fn push<const N: usize, WIRE: InterpreterTypes, H: ?Sized>(
     context: InstructionContext<'_, H, WIRE>,
 ) {
     let slice = context.interpreter.bytecode.read_slice(N);
-    if !context.interpreter.stack.push_slice(slice) {
+    if !context.interpreter.stack.push_immediate::<N>(slice) {
         context.interpreter.halt(InstructionResult::StackOverflow);
         return;
     }
