@@ -84,6 +84,22 @@ pub const fn instruction_table<WIRE: InterpreterTypes, H: Host>() -> [Instructio
     const { instruction_table_impl::<WIRE, H>() }
 }
 
+/// Same as [`instruction_table_gas_changes_spec`] but with JUMP/JUMPI swapped for
+/// folded variants that skip the destination JUMPDEST dispatch.
+///
+/// This is intended for the non-inspector hot path — inspectors should use the
+/// vanilla table so that each JUMPDEST still produces a discrete step.
+#[inline]
+pub fn instruction_table_gas_changes_spec_fast<WIRE: InterpreterTypes, H: Host>(
+    spec: SpecId,
+) -> [Instruction<WIRE, H>; 256] {
+    use bytecode::opcode::*;
+    let mut table = instruction_table_gas_changes_spec::<WIRE, H>(spec);
+    table[JUMP as usize] = Instruction::new(control::jump_folded, 8);
+    table[JUMPI as usize] = Instruction::new(control::jumpi_folded, 10);
+    table
+}
+
 /// Create a instruction table with applied spec changes to static gas cost.
 #[inline]
 pub fn instruction_table_gas_changes_spec<WIRE: InterpreterTypes, H: Host>(

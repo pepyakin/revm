@@ -40,6 +40,38 @@ fn jump_inner<WIRE: InterpreterTypes>(interpreter: &mut Interpreter<WIRE>, targe
     interpreter.bytecode.absolute_jump(target);
 }
 
+/// Implements the JUMP instruction, folding the destination JUMPDEST into the jump.
+///
+/// Lands one byte past the JUMPDEST and charges its 1 gas here, saving a dispatch.
+pub fn jump_folded<ITy: InterpreterTypes, H: ?Sized>(context: InstructionContext<'_, H, ITy>) {
+    popn!([target], context.interpreter);
+    jump_inner_folded(context.interpreter, target);
+}
+
+/// Implements the JUMPI instruction, folding the destination JUMPDEST into the jump.
+pub fn jumpi_folded<WIRE: InterpreterTypes, H: ?Sized>(context: InstructionContext<'_, H, WIRE>) {
+    popn!([target, cond], context.interpreter);
+    if !cond.is_zero() {
+        jump_inner_folded(context.interpreter, target);
+    }
+}
+
+#[inline(always)]
+fn jump_inner_folded<WIRE: InterpreterTypes>(interpreter: &mut Interpreter<WIRE>, target: U256) {
+    let target = as_usize_saturated!(target);
+    if !interpreter.bytecode.is_valid_legacy_jump(target) {
+        interpreter.halt(InstructionResult::InvalidJump);
+        return;
+    }
+    // Charge the skipped JUMPDEST's 1 gas.
+    if interpreter.gas.record_cost_unsafe(1) {
+        return interpreter.halt_oog();
+    }
+    // SAFETY: `is_valid_legacy_jump` validates `target`; legacy bytecode is padded
+    // past its original length, so `target + 1` is always in bounds.
+    interpreter.bytecode.absolute_jump(target + 1);
+}
+
 /// Implements the JUMPDEST instruction.
 ///
 /// Marks a valid destination for jump operations.
